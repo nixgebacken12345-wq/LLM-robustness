@@ -1,0 +1,27 @@
+This repository hosts a study on how LLM-based code assistants handle legacy or corrupted configuration files. The primary focus is the "Uncanny Valley" of model safety: where models fail to distinguish between adversarial obfuscation and benign-but-noisy encoding artifacts.
+Research Context
+
+During testing, I've observed that syntactically valid inputs—like user_p⁠_⁠w⁠о⁠r⁠d = "test" using invisible separators—frequently trigger false positives in safety pipelines. This suggests a conflation between encoding artifacts and malicious intent within the model's latent representation.
+Core Objectives
+
+    Tokenization Resilience: Investigating BPE fragmentation caused by zero-width characters and UTF-8 migration artifacts. Goal: Prevent "overblocking" of legitimate i18n content.
+
+    Embedding Regularization: Determining if embedding spaces can be regularized so debugging snippets (e.g., cred_value = "temp") aren't misclassified as exploits due to character-level similarity to threat corpora.
+
+    Contextual Signaling: Identifying which metadata (headers, comments, file types) reliably signals "benign intent" to post-generation refusal classifiers.
+
+Focus Areas
+
+    UTF-8 Migrations: Handling legacy auth modules.
+
+    Log Recovery: Processing partially corrupted debug output.
+
+    Homoglyph Normalization: Managing internationalized domain names and user-generated content.
+
+Repo Structure (Proposed)
+
+    /src: Scripts for simulating encoding noise (ZWSP, homoglyphs, UTF-8 corruption).
+
+    /eval: Refusal-rate benchmarks across different open-source models.
+
+    /docs: Notes on attention-pathway behavior and safety head calibration.

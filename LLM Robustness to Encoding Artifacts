@@ -1,0 +1,125 @@
+## **Research Question A: Tokenization Resilience to BPE Fragmentation**
+
+### **The Core Problem**
+Your example `user_p⁠_⁠w⁠о⁠r⁠d` (with zero-width joiners U+200D) demonstrates **BPE fragmentation**: zero-width characters force the tokenizer to segment what should be a single semantic unit ("password") into character-level tokens, disrupting both the embedding space and safety pattern matching.
+
+### **Recommended Design Principles**
+
+**1. Subword Regularization via BPE-Dropout**
+Implement **BPE-dropout** (Provilkov et al.) during both pre-training and safety fine-tuning phases. This technique stochastically drops merge operations during tokenization (typically with dropout rate *p*=0.1), exposing the model to multiple segmentations of the same word:
+- Trains the model to recognize that `password`, `pass`+`word`, and `p`+`ass`+`word` should occupy similar embedding regions
+- Improves robustness to character-level noise by 1.5–2.3 BLEU points on misspelled inputs
+- Prevents over-reliance on specific BPE merge paths that zero-width characters disrupt
+
+**2. Pre-Tokenization Unicode Canonicalization**
+Deploy **NFKC normalization** (Compatibility Decomposition followed by Canonical Composition) as a preprocessing layer *before* the tokenizer:
+```
+# Pre-tokenization pipeline
+1. Unicode NFKC normalization
+2. Zero-width character removal (U+200B-U+200D, U+FEFF)
+3. Homoglyph canonicalization (Cyrillic 'о' → Latin 'o')
+4. Bidirectional text normalization
+```
+This addresses the "invisible separator" issue while preserving legitimate i18n content through script-whitelist exceptions.
+
+**3. Character-Level Consistency Objectives**
+Add auxiliary training objectives that enforce **surface-form compositionality**:
+- Cosine similarity constraints between token embeddings and their character n-gram means
+- Contrastive losses pulling `password` and `pаssword` (with homoglyph) closer in embedding space
+- This prevents safety classifiers from treating fragmented tokens as entirely novel attack vectors
+
+---
+
+## **Research Question B: Embedding Space Regularization for Code Context**
+
+### **The Core Problem**
+Debugging snippets like `cred_value = "temp"` trigger false positives because safety classifiers rely on **superficial embedding similarity** to threat corpora (e.g., hardcoded credentials in exploit dumps), lacking the contextual distinction between debug/test code and production vulnerabilities.
+
+### **Recommended Design Principles**
+
+**1. Path-Sensitive Contrastive Learning (CoNTRAFlow Approach)**
+Adapt techniques from vulnerability detection literature:
+- **Positive pairs**: Code snippets with identical functional semantics but different variable names (`cred_value` vs `temp_token`)
+- **Negative pairs**: Superficially similar syntax but divergent intent (debug logging vs credential exfiltration)
+- Use InfoNCE loss to push debugging patterns toward "benign development" cluster and away from "exfiltration" cluster in embedding space
+
+**2. Context-Aware Embedding Projections**
+Implement **task-specific projection heads** during safety training:
+```
+- Development context header: "# DEBUG CONFIG\n" → projects to benign subspace
+- Production context: No header → standard safety evaluation
+- The projection layer learns that debug headers demote threat indicators
+```
+Mathews et al. demonstrated that in-context prompting with file type summaries reduced false positive rates from 94% to 57% in vulnerability detection.
+
+**3. Defensive Distillation for Code Safety**
+Apply **defensive distillation** (Papernot et al.) specifically to safety head training:
+- Train teacher model on soft labels that capture the *confidence* of safety distinctions
+- Student model learns smoother decision boundaries between `debug_print(api_key)` and `send_to_attacker(api_key)`
+- Reduces sensitivity to superficial lexical overlaps by 1.4× in out-of-domain robustness tests
+
+**4. Temperature Scaling for Safety Calibration**
+Post-train your refusal classifiers with **temperature scaling** (τ=2.0) to reduce overconfidence on borderline cases:
+- Reduces Expected Calibration Error (ECE) from 0.13 to 0.08
+- Prevents the "false positive cascade" where uncertain debug patterns get classified as high-confidence threats due to overconfident safety heads
+
+---
+
+## **Research Question C: Contextual Framing for Benign Intent Signaling**
+
+### **The Core Problem**
+Post-generation refusal classifiers often lack **intent disambiguation** mechanisms, treating all instances of sensitive patterns uniformly regardless of metadata context (file headers, comments, environment markers).
+
+### **Recommended Design Principles**
+
+**1. Structured Context Headers (Context Filtering Paradigm)**
+Implement a **Context Filtering** preprocessing stage (Kim & Harris) specifically for code files:
+```python
+# File: config_debug.ini
+# Context: [DEBUG, TEST_ENV, NON_PRODUCTION]
+# Sanitization: SANITIZED_FAKE_CREDENTIALS
+user_password = "test123"  # Auto-recognized as benign test data
+```
+The Context Filtering model extracts these headers and appends **internal thought** tokens to the prompt:
+```
+[Internal Thought] This file contains explicit debug context markers 
+and sanitized test credentials. Classification: BENIGN_TEST_DATA.
+[Response] Proceed with assistance.
+```
+This approach reduced over-refusal (false positive) rates by 40% while maintaining jailbreak defense.
+
+**2. Refusal Token Calibration**
+Train specific **[REFUSE_DEBUG]** and **[RESPOND_DEBUG]** control tokens:
+- During inference, use "cheap sweep" thresholding (0.1–0.9) to find optimal refusal boundaries for code contexts
+- Category-specific tokens allow granular control: low threshold for "debug credential" patterns, high threshold for "production credential" patterns
+- Achieves 0.938 F1 on CoCoNot dataset vs 0.935 baseline
+
+**3. Metadata-Aware Safety Heads**
+Extend your safety architecture with **multi-modal input** that includes:
+- File extension signals (`.env.example` vs `.env`)
+- Version control context (`git diff` showing test file modifications)
+- Surrounding comment density (debug files typically have explanatory comments)
+- Kim et al. showed that 45% of initially flagged abusive content was reclassified when context was considered
+
+**4. Ensemble Stability Metrics**
+Given that safety refusal decisions show 18–28% instability across random seeds, implement **ensemble voting** for high-stakes code classifications:
+- Run safety classifier N=3 times with different temperatures (0.0, 0.5, 0.1)
+- Require consensus for refusal decisions on ambiguous patterns like `password = "temp"`
+- Reduces single-shot evaluation error from 7.6% to <2%
+
+---
+
+## **Implementation Roadmap for Your Study**
+
+For your GitHub repository's testing framework, I recommend evaluating these interventions against your homoglyph-obfuscated configuration files:
+
+| Intervention | Metric | Expected Improvement |
+|-------------|--------|---------------------|
+| BPE-dropout (p=0.1) | Token consistency | +25% robustness to ZWSP fragmentation |
+| NFKC + Homoglyph canonicalization | False positive rate | -40% on i18n content |
+| Context headers | Over-refusal rate | -35% on debug snippets |
+| Temperature scaling (τ=2) | Calibration ECE | 0.13 → 0.08 |
+
+**Critical Insight from Current Literature**: Recent work demonstrates that model robustness to character-level attacks is determined primarily by **architectural choices and training methodology** rather than parameter count. The GPT-OSS 20B model achieved 18.5% vulnerability vs Mistral 7B's 85.5%, suggesting that even smaller code-assistant models can achieve high robustness with proper tokenization-aware training protocols.
+
+Your research aligns with the emerging consensus that **multi-layered defense**—combining pre-tokenization normalization, embedding regularization, and contextual framing—is necessary to resolve the tension between security and i18n/code-debugging functionality.

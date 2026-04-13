@@ -17,3 +17,24 @@ Whisper Telemetry Collector is an authorized IT diagnostic tool for:
 ```bash
 pip install -r requirements.txt
 python setup.py install
+```
+
+Configuration
+
+Copy .env.example to .env and configure:
+
+  WHISPER_TELEMETRY_ENDPOINT (internal IT endpoint)
+  WHISPER_TELEMETRY_KEY (API authentication)
+
+  Usage
+
+ python src/main.py --service install
+ net start WhisperTelemetry
+
+ Legal
+
+Authorized use only. Unauthorized access violates company policy.
+
+
+---
+

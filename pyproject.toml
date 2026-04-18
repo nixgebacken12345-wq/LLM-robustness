@@ -1,0 +1,23 @@
+[project]
+name = "cdd-orchestrator"
+version = "0.1.0"
+description = "Deterministic LLM Orchestration via Temporal.io"
+requires-python = ">=3.11"
+dependencies = [
+    "temporalio>=1.4.0,<1.5.0",
+    "pydantic[email]>=2.6.0,<2.7.0",
+    "pydantic-settings>=2.1.0,<2.2.0",
+    "sqlalchemy>=2.0.0,<2.1.0",
+    "litellm>=1.30.0,<1.31.0",
+    "instructor>=0.6.0,<0.7.0",
+    "typer>=0.9.0,<0.10.0",
+    "python-on-whales>=0.68.0,<0.69.0",
+    "networkx>=3.2.0,<3.3.0",
+    "tree-sitter>=0.20.0,<0.21.0",
+    "tree-sitter-python>=0.20.0,<0.21.0",
+    "structlog>=24.1.0,<24.2.0"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"

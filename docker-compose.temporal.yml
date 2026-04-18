@@ -1,0 +1,17 @@
+version: "3.8"
+services:
+  cassandra:
+    image: cassandra:4.1
+    ports:
+      - "9042:9042"
+  temporal:
+    image: temporalio/auto-setup:1.22.4
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    environment:
+      - DB=cassandra
+      - CASSANDRA_SEEDS=cassandra
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
+    depends_on:
+      - cassandra
